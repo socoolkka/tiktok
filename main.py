@@ -195,6 +195,14 @@ app.add_middleware(
 )
 
 
+@app.get("/")
+async def root():
+    return {
+        "message": "このページには何もありません。/status または /comments を確認してください。",
+        "endpoints": ["/status", "/comments"]
+    }
+
+
 @app.get("/status")
 async def get_status():
     return {

@@ -117,7 +117,6 @@ async def run_live_session() -> None:
     except Exception as e:
         logger.warning(f"[run_live_session] 接続エラー: {e}")
     finally:
-        global is_live, live_start_time, current_client
         is_live = False
         live_start_time = None
         current_client  = None

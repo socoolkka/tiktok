@@ -97,20 +97,27 @@ async def run_live_session() -> None:
 
     @client.on(CommentEvent)
     async def on_comment(event: CommentEvent):
-        entry = {
-            "type":      "comment",
-            "user":      event.user.nickname,
-            "user_id":   str(event.user.unique_id),
-            "avatar":    (
-                str(event.user.avatar_thumb.url_list[0])
-                if event.user.avatar_thumb and event.user.avatar_thumb.url_list
-                else ""
-            ),
-            "comment":   event.comment,
-            "timestamp": time.time(),
-        }
-        comment_history.append(entry)
-        await broadcast(entry)
+        try:
+            avatar = ""
+            try:
+                urls = getattr(event.user.avatar_thumb, "url_list", None)
+                if urls:
+                    avatar = str(urls[0])
+            except Exception:
+                pass
+
+            entry = {
+                "type":      "comment",
+                "user":      event.user.nickname or "?",
+                "user_id":   str(event.user.unique_id or ""),
+                "avatar":    avatar,
+                "comment":   event.comment or "",
+                "timestamp": time.time(),
+            }
+            comment_history.append(entry)
+            await broadcast(entry)
+        except Exception as e:
+            logger.warning(f"[on_comment] スキップ: {e}")
 
     try:
         await client.connect()

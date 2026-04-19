@@ -23,7 +23,7 @@ from TikTokLive import TikTokLiveClient
 from TikTokLive.events import CommentEvent, ConnectEvent, DisconnectEvent
 
 # ── Config ───────────────────────────────────────────────────────────────────
-TARGET_USER    = "@exploiterkaisetusubu"
+TARGET_USER    = "@exploiterkaisetusub"
 MAX_HISTORY    = 100
 CHECK_INTERVAL = 15     # ライブ未開始時の確認間隔（秒）
 RETRY_ON_ERROR = 30     # エラー後の待機秒数

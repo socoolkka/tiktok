@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: tiktok-live-api
+    runtime: python
+    plan: free          # free / starter / standard など好みで変更
+    region: singapore   # 日本から近いリージョン (oregon / frankfurt も選択可)
+
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+
+    # Render の無料プランはアイドル時にスリープするが
+    # Web サービスとして登録すれば ping で起こし続けられる
+    healthCheckPath: /status
+
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.0"

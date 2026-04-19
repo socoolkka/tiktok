@@ -1,0 +1,8 @@
+# TikTok Live + API server dependencies
+TikTokLive==6.6.5
+fastapi==0.136.0
+uvicorn[standard]==0.44.0
+
+# TikTokLive transitive deps (pinned for stability)
+httpx==0.28.1
+websockets==16.0

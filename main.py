@@ -20,13 +20,13 @@ from typing import Set
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from TikTokLive import TikTokLiveClient
-from TikTokLive.events import CommentEvent, ConnectEvent, DisconnectEvent
+from TikTokLive.events import CommentEvent, ConnectEvent, DisconnectEvent, GiftEvent, ViewerCountUpdateEvent
 
 # ── Config ───────────────────────────────────────────────────────────────────
 TARGET_USER    = "@exploiterkaisetusub"
 MAX_HISTORY    = 100
-CHECK_INTERVAL = 15     # ライブ未開始時の確認間隔（秒）
-RETRY_ON_ERROR = 30     # エラー後の待機秒数
+CHECK_INTERVAL = 15
+RETRY_ON_ERROR = 30
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,6 +40,8 @@ active_ws:       Set[WebSocket] = set()
 is_live          = False
 live_start_time: float | None  = None
 current_client:  TikTokLiveClient | None = None
+viewer_count:    int = 0
+total_coins:     int = 0
 
 # ── WebSocket broadcast ───────────────────────────────────────────────────────
 async def broadcast(data: dict) -> None:
@@ -119,6 +121,34 @@ async def run_live_session() -> None:
         except Exception as e:
             logger.warning(f"[on_comment] スキップ: {e}")
 
+    @client.on(GiftEvent)
+    async def on_gift(event: GiftEvent):
+        global total_coins
+        try:
+            coins = getattr(event, "diamond_count", 0) or 0
+            total_coins += coins
+            await broadcast({
+                "type":        "gift",
+                "user":        event.user.nickname or "?",
+                "gift_name":   getattr(event, "gift_name", "ギフト"),
+                "coins":       coins,
+                "total_coins": total_coins,
+            })
+        except Exception as e:
+            logger.warning(f"[on_gift] スキップ: {e}")
+
+    @client.on(ViewerCountUpdateEvent)
+    async def on_viewer(event: ViewerCountUpdateEvent):
+        global viewer_count
+        try:
+            viewer_count = event.viewer_count
+            await broadcast({
+                "type":         "viewers",
+                "viewer_count": viewer_count,
+            })
+        except Exception as e:
+            logger.warning(f"[on_viewer] スキップ: {e}")
+
     try:
         await client.connect()
     except Exception as e:
@@ -127,6 +157,8 @@ async def run_live_session() -> None:
         is_live = False
         live_start_time = None
         current_client  = None
+        viewer_count    = 0
+        total_coins     = 0
 
 
 # ── メイン監視ループ ──────────────────────────────────────────────────────
@@ -197,10 +229,14 @@ app.add_middleware(
 
 @app.get("/")
 async def root():
-    return {
-        "message": "このページには何もありません。/status または /comments を確認してください。",
-        "endpoints": ["/status", "/comments"]
-    }
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        content={
+            "message": "このページには何もありません。/status または /comments を確認してください。",
+            "endpoints": ["/status", "/comments"]
+        },
+        media_type="application/json; charset=utf-8"
+    )
 
 
 @app.get("/status")
@@ -211,6 +247,8 @@ async def get_status():
         "buffered":       len(comment_history),
         "live_since":     live_start_time,
         "check_interval": CHECK_INTERVAL,
+        "viewer_count":   viewer_count,
+        "total_coins":    total_coins,
     }
 
 

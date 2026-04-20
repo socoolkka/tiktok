@@ -141,7 +141,7 @@ async def run_live_session() -> None:
     async def on_viewer(event: RoomUserSeqEvent):
         global viewer_count
         try:
-            viewer_count = event.total_user or event.m_total or 0
+            viewer_count = event.m_total or 0
             await broadcast({
                 "type":         "viewers",
                 "viewer_count": viewer_count,

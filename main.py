@@ -20,7 +20,7 @@ from typing import Set
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from TikTokLive import TikTokLiveClient
-from TikTokLive.events import CommentEvent, ConnectEvent, DisconnectEvent, GiftEvent, ViewerCountUpdateEvent
+from TikTokLive.events import CommentEvent, ConnectEvent, DisconnectEvent, GiftEvent, RoomUserSeqEvent
 
 # ── Config ───────────────────────────────────────────────────────────────────
 TARGET_USER    = "@exploiterkaisetusub"
@@ -137,11 +137,11 @@ async def run_live_session() -> None:
         except Exception as e:
             logger.warning(f"[on_gift] スキップ: {e}")
 
-    @client.on(ViewerCountUpdateEvent)
-    async def on_viewer(event: ViewerCountUpdateEvent):
+    @client.on(RoomUserSeqEvent)
+    async def on_viewer(event: RoomUserSeqEvent):
         global viewer_count
         try:
-            viewer_count = event.viewer_count
+            viewer_count = event.total_user or event.m_total or 0
             await broadcast({
                 "type":         "viewers",
                 "viewer_count": viewer_count,

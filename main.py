@@ -20,7 +20,7 @@ from typing import Set
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from TikTokLive import TikTokLiveClient
-from TikTokLive.events import CommentEvent, ConnectEvent, DisconnectEvent, GiftEvent, RoomUserSeqEvent
+from TikTokLive.events import CommentEvent, ConnectEvent, DisconnectEvent, GiftEvent, LikeEvent, RoomUserSeqEvent
 
 # ── Config ───────────────────────────────────────────────────────────────────
 TARGET_USER    = "@exploiterkaisetusub"
@@ -42,6 +42,7 @@ live_start_time: float | None  = None
 current_client:  TikTokLiveClient | None = None
 viewer_count:    int = 0
 total_coins:     int = 0
+total_likes:     int = 0
 
 # ── WebSocket broadcast ───────────────────────────────────────────────────────
 async def broadcast(data: dict) -> None:
@@ -137,6 +138,18 @@ async def run_live_session() -> None:
         except Exception as e:
             logger.warning(f"[on_gift] スキップ: {e}")
 
+    @client.on(LikeEvent)
+    async def on_like(event: LikeEvent):
+        global total_likes
+        try:
+            total_likes = event.total or total_likes
+            await broadcast({
+                "type":        "like",
+                "total_likes": total_likes,
+            })
+        except Exception as e:
+            logger.warning(f"[on_like] スキップ: {e}")
+
     @client.on(RoomUserSeqEvent)
     async def on_viewer(event: RoomUserSeqEvent):
         global viewer_count
@@ -159,6 +172,7 @@ async def run_live_session() -> None:
         current_client  = None
         viewer_count    = 0
         total_coins     = 0
+        total_likes     = 0
 
 
 # ── メイン監視ループ ──────────────────────────────────────────────────────
@@ -249,6 +263,7 @@ async def get_status():
         "check_interval": CHECK_INTERVAL,
         "viewer_count":   viewer_count,
         "total_coins":    total_coins,
+        "total_likes":    total_likes,
     }
 
 

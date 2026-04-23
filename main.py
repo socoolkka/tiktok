@@ -19,6 +19,7 @@ from typing import Set
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse
 from TikTokLive import TikTokLiveClient
 from TikTokLive.events import CommentEvent, ConnectEvent, DisconnectEvent, GiftEvent, LikeEvent, RoomUserSeqEvent
 
@@ -126,12 +127,14 @@ async def run_live_session() -> None:
     async def on_gift(event: GiftEvent):
         global total_coins
         try:
-            coins = getattr(event, "diamond_count", 0) or 0
+            diamond = getattr(event.m_gift, "diamond_count", 0) or 0
+            repeat  = getattr(event, "repeat_count", 1) or 1
+            coins   = diamond * repeat
             total_coins += coins
             await broadcast({
                 "type":        "gift",
-                "user":        event.user.nickname or "?",
-                "gift_name":   getattr(event, "gift_name", "ギフト"),
+                "user":        event.from_user.nickname or "?",
+                "gift_name":   getattr(event.m_gift, "name", "ギフト"),
                 "coins":       coins,
                 "total_coins": total_coins,
             })
@@ -241,16 +244,211 @@ app.add_middleware(
 )
 
 
-@app.get("/")
+# ── トップページ（読み上げUI）────────────────────────────────────────────
+@app.get("/", response_class=HTMLResponse)
 async def root():
-    from fastapi.responses import JSONResponse
-    return JSONResponse(
-        content={
-            "message": "このページには何もありません。/status または /comments を確認してください。",
-            "endpoints": ["/status", "/comments"]
-        },
-        media_type="application/json; charset=utf-8"
-    )
+    return HTMLResponse(content="""<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>TikTok Live 読み上げ</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background:#0a0a12; color:#e0d8ff;
+    font-family:'Segoe UI',sans-serif;
+    display:flex; flex-direction:column; height:100vh; overflow:hidden;
+  }
+  #header {
+    background:#14142a; border-bottom:1px solid #4b3bc8;
+    padding:12px 16px; display:flex; align-items:center; gap:12px;
+  }
+  #header h1 { font-size:14px; color:#fff; }
+  #dot { width:10px; height:10px; border-radius:50%; background:#c33; flex-shrink:0; }
+  #dot.live { background:#2dd770; animation:pulse 1.2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+  #status { font-size:11px; color:#7870aa; margin-left:auto; }
+  #controls {
+    background:#10101e; padding:8px 16px;
+    display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+    border-bottom:1px solid #2a2a44;
+  }
+  #controls label { font-size:11px; color:#7870aa; }
+  #controls select, #controls input[type=range] {
+    background:#1a1a2e; color:#e0d8ff;
+    border:1px solid #4b3bc8; border-radius:6px;
+    padding:3px 6px; font-size:11px;
+  }
+  #toggleTTS {
+    margin-left:auto; background:#6450ff; color:#fff;
+    border:none; border-radius:8px; padding:5px 14px;
+    font-size:12px; cursor:pointer; font-weight:bold;
+  }
+  #toggleTTS.off { background:#444; }
+  #log {
+    flex:1; overflow-y:auto; padding:10px 14px;
+    display:flex; flex-direction:column; gap:6px;
+  }
+  .entry {
+    background:#16162a; border-radius:10px; padding:7px 10px;
+    border-left:3px solid #6450ff; font-size:12px;
+    animation:fadeIn 0.2s ease;
+  }
+  .entry.gift { border-left-color:#ffcd32; }
+  .entry .name { color:#6450ff; font-weight:bold; margin-right:6px; }
+  .entry.gift .name { color:#ffcd32; }
+  .entry .msg { color:#ccc8ee; }
+  .speaking { color:#2dd770; font-size:10px; margin-left:6px; }
+  @keyframes fadeIn { from{opacity:0;transform:translateY(4px)} to{opacity:1} }
+</style>
+</head>
+<body>
+<div id="header">
+  <div id="dot"></div>
+  <h1>⟡ TikTok Live 読み上げ</h1>
+  <span id="status">接続中...</span>
+</div>
+<div id="controls">
+  <label>声:</label>
+  <select id="voiceSelect"></select>
+  <label>速さ:</label>
+  <input id="rateRange" type="range" min="0.5" max="2" step="0.1" value="1.1">
+  <span id="rateVal" style="font-size:11px;color:#7870aa">1.1</span>
+  <label>音量:</label>
+  <input id="volRange" type="range" min="0" max="1" step="0.05" value="1">
+  <span id="volVal" style="font-size:11px;color:#7870aa">1.0</span>
+  <button id="toggleTTS">🔊 読み上げON</button>
+</div>
+<div id="log"></div>
+<script>
+const dot       = document.getElementById('dot')
+const statusEl  = document.getElementById('status')
+const log       = document.getElementById('log')
+const voiceSel  = document.getElementById('voiceSelect')
+const rateRange = document.getElementById('rateRange')
+const rateVal   = document.getElementById('rateVal')
+const volRange  = document.getElementById('volRange')
+const volVal    = document.getElementById('volVal')
+const toggleBtn = document.getElementById('toggleTTS')
+
+let ttsEnabled = true
+let seenTotal  = -1
+let isLive     = false
+let voices     = []
+let ttsQueue   = []
+let ttsBusy    = false
+let currentSpan = null
+
+function loadVoices() {
+  voices = speechSynthesis.getVoices()
+  voiceSel.innerHTML = ''
+  voices.forEach((v, i) => {
+    const opt = document.createElement('option')
+    opt.value = i
+    opt.textContent = v.name + ' (' + v.lang + ')'
+    if (v.lang.startsWith('ja')) opt.selected = true
+    voiceSel.appendChild(opt)
+  })
+}
+speechSynthesis.onvoiceschanged = loadVoices
+loadVoices()
+
+function speakNext() {
+  if (ttsBusy || ttsQueue.length === 0 || !ttsEnabled) return
+  ttsBusy = true
+  const { text, span } = ttsQueue.shift()
+  const utter = new SpeechSynthesisUtterance(text)
+  utter.voice  = voices[voiceSel.value] || null
+  utter.rate   = parseFloat(rateRange.value)
+  utter.volume = parseFloat(volRange.value)
+  utter.lang   = 'ja-JP'
+  if (span) { span.innerHTML = ' <span class="speaking">🔊</span>'; currentSpan = span }
+  utter.onend = utter.onerror = () => {
+    ttsBusy = false
+    if (currentSpan) { currentSpan.innerHTML = ''; currentSpan = null }
+    speakNext()
+  }
+  speechSynthesis.speak(utter)
+}
+
+function queueTTS(text, span) {
+  ttsQueue.push({ text, span })
+  speakNext()
+}
+
+function addEntry(data) {
+  const isGift = data.type === 'gift'
+  const div = document.createElement('div')
+  div.className = 'entry' + (isGift ? ' gift' : '')
+  const name = document.createElement('span')
+  name.className = 'name'
+  name.textContent = (isGift ? '🪙 ' : '') + (data.user || '?')
+  const msg = document.createElement('span')
+  msg.className = 'msg'
+  msg.textContent = isGift
+    ? (data.gift_name || 'ギフト') + ' (' + (data.coins || 0) + ' コイン)'
+    : (data.comment || '')
+  const ind = document.createElement('span')
+  div.appendChild(name); div.appendChild(msg); div.appendChild(ind)
+  log.appendChild(div)
+  log.scrollTop = log.scrollHeight
+  while (log.children.length > 60) log.removeChild(log.firstChild)
+  const ttsText = isGift
+    ? (data.user + 'が' + (data.gift_name || 'ギフト') + 'を' + (data.coins || 0) + 'コイン送りました')
+    : (data.user + '、' + data.comment)
+  queueTTS(ttsText, ind)
+}
+
+function setStatus(live, msg) {
+  isLive = live
+  dot.className = live ? 'live' : ''
+  statusEl.textContent = msg || (live ? 'ライブ配信中' : '未配信')
+}
+
+async function fetchStatus() {
+  try {
+    const res = await fetch('/status')
+    const d = await res.json()
+    setStatus(d.live, d.live ? 'ライブ配信中 ✓' : '現在ライブ配信はありません')
+  } catch { setStatus(false, 'サーバーエラー') }
+}
+
+async function fetchComments() {
+  if (!isLive) return
+  try {
+    const res = await fetch('/comments?limit=50')
+    const d = await res.json()
+    if (!d || !d.comments) return
+    const serverTotal = d.total || 0
+    if (seenTotal === -1) { seenTotal = serverTotal; return }
+    const newCount = serverTotal - seenTotal
+    if (newCount <= 0) return
+    const comments = d.comments
+    const startIdx = Math.max(0, comments.length - newCount)
+    for (let i = startIdx; i < comments.length; i++) addEntry(comments[i])
+    seenTotal = serverTotal
+  } catch {}
+}
+
+rateRange.oninput = () => rateVal.textContent = rateRange.value
+volRange.oninput  = () => volVal.textContent  = parseFloat(volRange.value).toFixed(2)
+toggleBtn.onclick = () => {
+  ttsEnabled = !ttsEnabled
+  toggleBtn.textContent = ttsEnabled ? '🔊 読み上げON' : '🔇 読み上げOFF'
+  toggleBtn.className   = ttsEnabled ? '' : 'off'
+  if (!ttsEnabled) speechSynthesis.cancel()
+}
+
+async function loop() {
+  await fetchStatus()
+  await fetchComments()
+  setTimeout(loop, 5000)
+}
+loop()
+</script>
+</body>
+</html>
+""")
 
 
 @app.get("/status")

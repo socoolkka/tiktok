@@ -57,7 +57,6 @@ async def broadcast(data: dict) -> None:
     active_ws.difference_update(dead)
 
 
-# ── ライブ中かどうかを確認 ────────────────────────────────────────────────
 async def check_is_live() -> bool:
     try:
         client = TikTokLiveClient(unique_id=TARGET_USER)
@@ -68,7 +67,6 @@ async def check_is_live() -> bool:
         return False
 
 
-# ── TikTokLive 接続セッション ─────────────────────────────────────────────
 async def run_live_session() -> None:
     global is_live, live_start_time, current_client
 
@@ -81,11 +79,7 @@ async def run_live_session() -> None:
         is_live = True
         live_start_time = time.time()
         logger.info(f"[TikTok] ✓ 接続成功 → {TARGET_USER}")
-        await broadcast({
-            "type":    "status",
-            "live":    True,
-            "message": "ライブ配信に接続しました",
-        })
+        await broadcast({"type": "status", "live": True, "message": "ライブ配信に接続しました"})
 
     @client.on(DisconnectEvent)
     async def on_disconnect(event: DisconnectEvent):
@@ -93,11 +87,7 @@ async def run_live_session() -> None:
         is_live = False
         live_start_time = None
         logger.info("[TikTok] 配信終了 / 切断")
-        await broadcast({
-            "type":    "status",
-            "live":    False,
-            "message": "配信が終了しました。再確認中...",
-        })
+        await broadcast({"type": "status", "live": False, "message": "配信が終了しました。再確認中..."})
 
     @client.on(CommentEvent)
     async def on_comment(event: CommentEvent):
@@ -109,7 +99,6 @@ async def run_live_session() -> None:
                     avatar = str(urls[0])
             except Exception:
                 pass
-
             entry = {
                 "type":      "comment",
                 "user":      event.user.nickname or "?",
@@ -146,10 +135,7 @@ async def run_live_session() -> None:
         global total_likes
         try:
             total_likes = event.total or total_likes
-            await broadcast({
-                "type":        "like",
-                "total_likes": total_likes,
-            })
+            await broadcast({"type": "like", "total_likes": total_likes})
         except Exception as e:
             logger.warning(f"[on_like] スキップ: {e}")
 
@@ -158,10 +144,7 @@ async def run_live_session() -> None:
         global viewer_count
         try:
             viewer_count = event.m_total or 0
-            await broadcast({
-                "type":         "viewers",
-                "viewer_count": viewer_count,
-            })
+            await broadcast({"type": "viewers", "viewer_count": viewer_count})
         except Exception as e:
             logger.warning(f"[on_viewer] スキップ: {e}")
 
@@ -178,41 +161,24 @@ async def run_live_session() -> None:
         total_likes     = 0
 
 
-# ── メイン監視ループ ──────────────────────────────────────────────────────
 async def watcher_loop() -> None:
     global is_live
     logger.info("[Watcher] 監視ループ開始")
-
     while True:
         try:
             logger.info(f"[Watcher] ライブ確認中... ({TARGET_USER})")
             live_now = await check_is_live()
-
             if live_now:
                 logger.info("[Watcher] ライブ検知！接続します")
-                await broadcast({
-                    "type":    "status",
-                    "live":    False,
-                    "message": "ライブを検知しました。接続中...",
-                })
+                await broadcast({"type": "status", "live": False, "message": "ライブを検知しました。接続中..."})
                 await run_live_session()
                 logger.info(f"[Watcher] セッション終了。{CHECK_INTERVAL}秒後に再確認")
-                await broadcast({
-                    "type":    "status",
-                    "live":    False,
-                    "message": f"配信終了。{CHECK_INTERVAL}秒後に再確認します",
-                })
+                await broadcast({"type": "status", "live": False, "message": f"配信終了。{CHECK_INTERVAL}秒後に再確認します"})
                 await asyncio.sleep(CHECK_INTERVAL)
-
             else:
                 logger.info(f"[Watcher] 未ライブ。{CHECK_INTERVAL}秒後に再確認")
-                await broadcast({
-                    "type":    "status",
-                    "live":    False,
-                    "message": "現在ライブ配信はありません。自動確認中...",
-                })
+                await broadcast({"type": "status", "live": False, "message": "現在ライブ配信はありません。自動確認中..."})
                 await asyncio.sleep(CHECK_INTERVAL)
-
         except asyncio.CancelledError:
             logger.info("[Watcher] キャンセルされました")
             break
@@ -221,7 +187,6 @@ async def watcher_loop() -> None:
             await asyncio.sleep(RETRY_ON_ERROR)
 
 
-# ── Lifespan ─────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     task = asyncio.create_task(watcher_loop())
@@ -233,7 +198,6 @@ async def lifespan(app: FastAPI):
         pass
 
 
-# ── FastAPI ───────────────────────────────────────────────────────────────────
 app = FastAPI(title="TikTok Live Comment API", lifespan=lifespan)
 
 app.add_middleware(
@@ -244,7 +208,6 @@ app.add_middleware(
 )
 
 
-# ── トップページ（読み上げUI）────────────────────────────────────────────
 @app.get("/", response_class=HTMLResponse)
 async def root():
     return HTMLResponse(content="""<!DOCTYPE html>
@@ -254,50 +217,26 @@ async def root():
 <title>TikTok Live 読み上げ</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
-  body {
-    background:#0a0a12; color:#e0d8ff;
-    font-family:'Segoe UI',sans-serif;
-    display:flex; flex-direction:column; height:100vh; overflow:hidden;
-  }
-  #header {
-    background:#14142a; border-bottom:1px solid #4b3bc8;
-    padding:12px 16px; display:flex; align-items:center; gap:12px;
-  }
+  body { background:#0a0a12; color:#e0d8ff; font-family:'Segoe UI',sans-serif; display:flex; flex-direction:column; height:100vh; overflow:hidden; }
+  #header { background:#14142a; border-bottom:1px solid #4b3bc8; padding:12px 16px; display:flex; align-items:center; gap:12px; }
   #header h1 { font-size:14px; color:#fff; }
   #dot { width:10px; height:10px; border-radius:50%; background:#c33; flex-shrink:0; }
   #dot.live { background:#2dd770; animation:pulse 1.2s infinite; }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
-  #status { font-size:11px; color:#7870aa; margin-left:auto; }
-  #controls {
-    background:#10101e; padding:8px 16px;
-    display:flex; align-items:center; gap:10px; flex-wrap:wrap;
-    border-bottom:1px solid #2a2a44;
-  }
+  #statusEl { font-size:11px; color:#7870aa; margin-left:auto; }
+  #controls { background:#10101e; padding:8px 16px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; border-bottom:1px solid #2a2a44; }
   #controls label { font-size:11px; color:#7870aa; }
-  #controls select, #controls input[type=range] {
-    background:#1a1a2e; color:#e0d8ff;
-    border:1px solid #4b3bc8; border-radius:6px;
-    padding:3px 6px; font-size:11px;
-  }
-  #toggleTTS {
-    margin-left:auto; background:#6450ff; color:#fff;
-    border:none; border-radius:8px; padding:5px 14px;
-    font-size:12px; cursor:pointer; font-weight:bold;
-  }
+  select, input[type=range] { background:#1a1a2e; color:#e0d8ff; border:1px solid #4b3bc8; border-radius:6px; padding:3px 6px; font-size:11px; }
+  #startBtn { background:#2dd770; color:#000; border:none; border-radius:8px; padding:6px 16px; font-size:12px; font-weight:bold; cursor:pointer; }
+  #toggleTTS { background:#6450ff; color:#fff; border:none; border-radius:8px; padding:5px 14px; font-size:12px; cursor:pointer; font-weight:bold; }
   #toggleTTS.off { background:#444; }
-  #log {
-    flex:1; overflow-y:auto; padding:10px 14px;
-    display:flex; flex-direction:column; gap:6px;
-  }
-  .entry {
-    background:#16162a; border-radius:10px; padding:7px 10px;
-    border-left:3px solid #6450ff; font-size:12px;
-    animation:fadeIn 0.2s ease;
-  }
+  #debugEl { font-size:10px; color:#ff8040; margin-left:8px; }
+  #log { flex:1; overflow-y:auto; padding:10px 14px; display:flex; flex-direction:column; gap:6px; }
+  .entry { background:#16162a; border-radius:10px; padding:7px 10px; border-left:3px solid #6450ff; font-size:12px; animation:fadeIn 0.2s ease; }
   .entry.gift { border-left-color:#ffcd32; }
-  .entry .name { color:#6450ff; font-weight:bold; margin-right:6px; }
-  .entry.gift .name { color:#ffcd32; }
-  .entry .msg { color:#ccc8ee; }
+  .name { color:#6450ff; font-weight:bold; margin-right:6px; }
+  .gift .name { color:#ffcd32; }
+  .msg { color:#ccc8ee; }
   .speaking { color:#2dd770; font-size:10px; margin-left:6px; }
   @keyframes fadeIn { from{opacity:0;transform:translateY(4px)} to{opacity:1} }
 </style>
@@ -306,9 +245,10 @@ async def root():
 <div id="header">
   <div id="dot"></div>
   <h1>⟡ TikTok Live 読み上げ</h1>
-  <span id="status">接続中...</span>
+  <span id="statusEl">接続中...</span>
 </div>
 <div id="controls">
+  <button id="startBtn">▶ 読み上げ開始</button>
   <label>声:</label>
   <select id="voiceSelect"></select>
   <label>速さ:</label>
@@ -317,12 +257,14 @@ async def root():
   <label>音量:</label>
   <input id="volRange" type="range" min="0" max="1" step="0.05" value="1">
   <span id="volVal" style="font-size:11px;color:#7870aa">1.0</span>
-  <button id="toggleTTS">🔊 読み上げON</button>
+  <button id="toggleTTS">🔊 ON</button>
+  <span id="debugEl"></span>
 </div>
 <div id="log"></div>
+
 <script>
 const dot       = document.getElementById('dot')
-const statusEl  = document.getElementById('status')
+const statusEl  = document.getElementById('statusEl')
 const log       = document.getElementById('log')
 const voiceSel  = document.getElementById('voiceSelect')
 const rateRange = document.getElementById('rateRange')
@@ -330,50 +272,89 @@ const rateVal   = document.getElementById('rateVal')
 const volRange  = document.getElementById('volRange')
 const volVal    = document.getElementById('volVal')
 const toggleBtn = document.getElementById('toggleTTS')
+const startBtn  = document.getElementById('startBtn')
+const debugEl   = document.getElementById('debugEl')
 
-let ttsEnabled = true
-let seenTotal  = -1
-let isLive     = false
-let voices     = []
-let ttsQueue   = []
-let ttsBusy    = false
-let currentSpan = null
+let ttsEnabled  = false
+let seenTotal   = -1
+let isLive      = false
+let voices      = []
+let ttsQueue    = []
+let ttsBusy     = false
+let started     = false
+
+function debug(msg) { debugEl.textContent = msg }
 
 function loadVoices() {
   voices = speechSynthesis.getVoices()
   voiceSel.innerHTML = ''
+  let jaIndex = 0
   voices.forEach((v, i) => {
     const opt = document.createElement('option')
     opt.value = i
     opt.textContent = v.name + ' (' + v.lang + ')'
-    if (v.lang.startsWith('ja')) opt.selected = true
+    if (v.lang.startsWith('ja')) { opt.selected = true; jaIndex = i }
     voiceSel.appendChild(opt)
   })
+  debug('声: ' + voices.length + '個')
 }
 speechSynthesis.onvoiceschanged = loadVoices
 loadVoices()
 
+// ── 必ずユーザー操作で最初の発話をトリガー ──────────────────
+startBtn.onclick = () => {
+  if (started) return
+  started = true
+  ttsEnabled = true
+  toggleBtn.textContent = '🔊 ON'
+  toggleBtn.className = ''
+  startBtn.style.background = '#444'
+  startBtn.textContent = '✓ 開始済み'
+
+  // Safari対策：無音の発話でTTSを初期化
+  const init = new SpeechSynthesisUtterance(' ')
+  init.volume = 0
+  init.onend = () => {
+    debug('TTS初期化完了')
+    speakNext()
+  }
+  speechSynthesis.speak(init)
+}
+
 function speakNext() {
-  if (ttsBusy || ttsQueue.length === 0 || !ttsEnabled) return
+  if (ttsBusy || ttsQueue.length === 0 || !ttsEnabled || !started) return
   ttsBusy = true
   const { text, span } = ttsQueue.shift()
+  debug('読み上げ中: ' + text.slice(0, 20))
+
   const utter = new SpeechSynthesisUtterance(text)
-  utter.voice  = voices[voiceSel.value] || null
+  const vi = parseInt(voiceSel.value)
+  utter.voice  = voices[vi] || null
   utter.rate   = parseFloat(rateRange.value)
   utter.volume = parseFloat(volRange.value)
   utter.lang   = 'ja-JP'
-  if (span) { span.innerHTML = ' <span class="speaking">🔊</span>'; currentSpan = span }
-  utter.onend = utter.onerror = () => {
+
+  if (span) { span.innerHTML = ' <span class="speaking">🔊</span>' }
+
+  utter.onend = () => {
     ttsBusy = false
-    if (currentSpan) { currentSpan.innerHTML = ''; currentSpan = null }
+    if (span) span.innerHTML = ''
+    debug('完了 残り' + ttsQueue.length + '件')
+    speakNext()
+  }
+  utter.onerror = (e) => {
+    ttsBusy = false
+    if (span) span.innerHTML = ''
+    debug('エラー: ' + e.error)
     speakNext()
   }
   speechSynthesis.speak(utter)
 }
 
 function queueTTS(text, span) {
+  if (ttsQueue.length > 10) ttsQueue.shift() // 溜まりすぎたら古いものを捨てる
   ttsQueue.push({ text, span })
-  speakNext()
+  if (started) speakNext()
 }
 
 function addEntry(data) {
@@ -393,6 +374,7 @@ function addEntry(data) {
   log.appendChild(div)
   log.scrollTop = log.scrollHeight
   while (log.children.length > 60) log.removeChild(log.firstChild)
+
   const ttsText = isGift
     ? (data.user + 'が' + (data.gift_name || 'ギフト') + 'を' + (data.coins || 0) + 'コイン送りました')
     : (data.user + '、' + data.comment)
@@ -434,7 +416,7 @@ rateRange.oninput = () => rateVal.textContent = rateRange.value
 volRange.oninput  = () => volVal.textContent  = parseFloat(volRange.value).toFixed(2)
 toggleBtn.onclick = () => {
   ttsEnabled = !ttsEnabled
-  toggleBtn.textContent = ttsEnabled ? '🔊 読み上げON' : '🔇 読み上げOFF'
+  toggleBtn.textContent = ttsEnabled ? '🔊 ON' : '🔇 OFF'
   toggleBtn.className   = ttsEnabled ? '' : 'off'
   if (!ttsEnabled) speechSynthesis.cancel()
 }
@@ -475,14 +457,12 @@ async def get_comments(limit: int = 50):
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
     active_ws.add(ws)
-
     await ws.send_text(json.dumps({
         "type":     "init",
         "live":     is_live,
         "comments": list(comment_history),
         "message":  "ライブ配信中" if is_live else "現在ライブ配信はありません。自動確認中...",
     }, ensure_ascii=False))
-
     try:
         while True:
             await ws.receive_text()

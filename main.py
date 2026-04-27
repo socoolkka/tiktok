@@ -1,8 +1,11 @@
 """
 TikTok Live Comment API Server
 ────────────────────────────────────────────────────────────
-・ユーザーごとに独立したセッションを管理
-・複数ユーザーが同時に異なる配信を監視できる
+Render などの常時稼働環境向け。
+
+・ライブ未開始 → 一定間隔でポーリングして自動検知
+・ライブ開始   → TikTokLive で接続しコメントを配信
+・ライブ終了   → 自動切断 → 再ポーリングループへ戻る
 ────────────────────────────────────────────────────────────
 """
 
@@ -10,7 +13,7 @@ import asyncio
 import json
 import logging
 import time
-from collections import deque
+from collections import deque, defaultdict
 from contextlib import asynccontextmanager
 from typing import Dict, Set
 
@@ -28,7 +31,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 
-# ── セッション（ユーザーごとの状態）─────────────────────────
+# ── セッション ────────────────────────────────────────────────
 class LiveSession:
     def __init__(self, username: str):
         self.username      = username
@@ -38,6 +41,7 @@ class LiveSession:
         self.total_coins   = 0
         self.total_likes   = 0
         self.comments      = deque(maxlen=MAX_HISTORY)
+        self.like_ranking: dict = {}   # user_id → {user, likes}
         self.ws_clients: Set[WebSocket] = set()
         self.task          = None
         self.running       = True
@@ -117,7 +121,23 @@ class LiveSession:
         async def on_like(event):
             try:
                 self.total_likes = event.total or self.total_likes
-                await self.broadcast({"type": "like", "total_likes": self.total_likes})
+
+                # いいねランキング更新
+                uid  = str(event.user.unique_id or "")
+                name = event.user.nickname or "?"
+                count = getattr(event, "count", 1) or 1
+                if uid not in self.like_ranking:
+                    self.like_ranking[uid] = {"user": name, "likes": 0}
+                self.like_ranking[uid]["likes"] += count
+                self.like_ranking[uid]["user"]   = name  # 名前を最新に更新
+
+                # トップ3をブロードキャスト
+                top3 = self._get_top3()
+                await self.broadcast({
+                    "type":        "like",
+                    "total_likes": self.total_likes,
+                    "top3":        top3,
+                })
             except Exception as e:
                 logger.warning(f"[{self.username}] on_like: {e}")
 
@@ -134,11 +154,20 @@ class LiveSession:
         except Exception as e:
             logger.warning(f"[{self.username}] 接続エラー: {e}")
         finally:
-            self.is_live = False
-            self.live_since = None
+            self.is_live      = False
+            self.live_since   = None
             self.viewer_count = 0
-            self.total_coins = 0
-            self.total_likes = 0
+            self.total_coins  = 0
+            self.total_likes  = 0
+            self.like_ranking = {}
+
+    def _get_top3(self):
+        sorted_likes = sorted(
+            self.like_ranking.values(),
+            key=lambda x: x["likes"],
+            reverse=True
+        )
+        return sorted_likes[:3]
 
     async def watcher(self):
         logger.info(f"[{self.username}] 監視開始")
@@ -172,8 +201,8 @@ class LiveSession:
 
 # ── セッション管理 ────────────────────────────────────────────
 sessions: Dict[str, LiveSession] = {}
-SESSION_TIMEOUT = 3600  # 1時間アクセスがなければ削除
 session_last_access: Dict[str, float] = {}
+SESSION_TIMEOUT = 3600
 
 async def get_or_create_session(username: str) -> LiveSession:
     key = username.lower().lstrip("@")
@@ -211,7 +240,6 @@ app = FastAPI(title="TikTok Live Comment API", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
-# ── トップページ（ユーザー名入力 → GUI）──────────────────────
 @app.get("/", response_class=HTMLResponse)
 async def root():
     return HTMLResponse(content="""<!DOCTYPE html>
@@ -223,28 +251,13 @@ async def root():
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   body { background:#0a0a12; color:#e0d8ff; font-family:'Segoe UI',sans-serif; min-height:100vh; display:flex; align-items:center; justify-content:center; }
-
-  /* ── 入力画面 ── */
   #inputScreen { display:flex; flex-direction:column; align-items:center; gap:20px; }
   #inputScreen h1 { font-size:22px; color:#fff; }
   #inputScreen p { font-size:13px; color:#7870aa; }
-  #userInput {
-    background:#16162a; color:#e0d8ff;
-    border:1.5px solid #4b3bc8; border-radius:12px;
-    padding:10px 16px; font-size:15px; width:260px; outline:none;
-    text-align:center;
-  }
+  #userInput { background:#16162a; color:#e0d8ff; border:1.5px solid #4b3bc8; border-radius:12px; padding:10px 16px; font-size:15px; width:260px; outline:none; text-align:center; }
   #userInput:focus { border-color:#6450ff; }
-  #startBtn {
-    background:#6450ff; color:#fff; border:none;
-    border-radius:12px; padding:10px 32px;
-    font-size:14px; font-weight:bold; cursor:pointer;
-    width:260px;
-  }
-  #startBtn:hover { background:#7a65ff; }
+  #startBtn { background:#6450ff; color:#fff; border:none; border-radius:12px; padding:10px 32px; font-size:14px; font-weight:bold; cursor:pointer; width:260px; }
   #errMsg { color:#ff6060; font-size:12px; min-height:16px; }
-
-  /* ── メイン画面 ── */
   #mainScreen { display:none; flex-direction:column; width:100%; max-width:480px; height:100vh; }
   #header { background:#14142a; border-bottom:1px solid #4b3bc8; padding:10px 14px; display:flex; align-items:center; gap:10px; }
   #dot { width:9px; height:9px; border-radius:50%; background:#c33; flex-shrink:0; }
@@ -253,40 +266,31 @@ async def root():
   #headerTitle { font-size:13px; color:#fff; font-weight:bold; }
   #headerUser { font-size:11px; color:#6450ff; background:#1a1430; border-radius:6px; padding:2px 8px; }
   #changeBtn { margin-left:auto; font-size:11px; color:#7870aa; background:none; border:1px solid #333; border-radius:6px; padding:2px 8px; cursor:pointer; }
-
-  #statsBar { background:#10101e; border-bottom:1px solid #2a2a44; padding:6px 14px; display:flex; gap:0; }
+  #statsBar { background:#10101e; border-bottom:1px solid #2a2a44; padding:6px 14px; display:flex; }
   .stat { flex:1; text-align:center; font-size:11px; }
-  .stat span { color:#7870aa; }
   .stat.viewers span { color:#a0a0c8; }
   .stat.likes span { color:#ff5096; }
   .stat.coins span { color:#ffcd32; }
-
   #statusBar { background:#10101e; border-bottom:1px solid #2a2a44; padding:5px 14px; display:flex; align-items:center; gap:7px; }
   #statusDot { width:7px; height:7px; border-radius:50%; background:#c33; flex-shrink:0; }
   #statusDot.live { background:#2dd770; }
   #statusMsg { font-size:10px; color:#7870aa; }
-
   #log { flex:1; overflow-y:auto; padding:8px 10px; display:flex; flex-direction:column; gap:5px; }
   .entry { background:#16162a; border-radius:8px; padding:6px 9px; border-left:3px solid #6450ff; font-size:12px; animation:fadeIn 0.2s; }
   .entry.gift { border-left-color:#ffcd32; }
   .name { color:#6450ff; font-weight:bold; margin-right:5px; }
   .gift .name { color:#ffcd32; }
   .msg { color:#ccc8ee; }
-
-  /* オーバーレイ */
-  #overlay { position:absolute; inset:0; background:rgba(8,6,16,0.92); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; border-radius:0; z-index:10; }
+  #overlay { position:absolute; inset:0; background:rgba(8,6,16,0.92); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; z-index:10; }
   #overlayIcon { font-size:40px; }
-  #overlayTitle { font-size:16px; font-weight:bold; color:#e0d8ff; }
+  #overlayTitle { font-size:16px; font-weight:bold; }
   #overlaySub { font-size:11px; color:#7870aa; }
   #overlayCountdown { font-size:11px; color:#ffa828; }
-
   #mainScreen { position:relative; }
   @keyframes fadeIn { from{opacity:0;transform:translateY(3px)} to{opacity:1} }
 </style>
 </head>
 <body>
-
-<!-- 入力画面 -->
 <div id="inputScreen">
   <h1>⟡ TikTok Live Viewer</h1>
   <p>TikTokのユーザー名を入力してください</p>
@@ -294,8 +298,6 @@ async def root():
   <div id="errMsg"></div>
   <button id="startBtn">接続する</button>
 </div>
-
-<!-- メイン画面 -->
 <div id="mainScreen">
   <div id="header">
     <div id="dot"></div>
@@ -320,154 +322,17 @@ async def root():
     <div id="overlayCountdown"></div>
   </div>
 </div>
-
 <script>
-const inputScreen = document.getElementById('inputScreen')
-const mainScreen  = document.getElementById('mainScreen')
-const userInput   = document.getElementById('userInput')
-const startBtn    = document.getElementById('startBtn')
-const errMsg      = document.getElementById('errMsg')
-const headerUser  = document.getElementById('headerUser')
-const changeBtn   = document.getElementById('changeBtn')
-const dot         = document.getElementById('dot')
-const statsBar    = document.getElementById('statsBar')
-const viewerVal   = document.getElementById('viewerVal')
-const likeVal     = document.getElementById('likeVal')
-const coinVal     = document.getElementById('coinVal')
-const statusDot   = document.getElementById('statusDot')
-const statusMsg   = document.getElementById('statusMsg')
-const log         = document.getElementById('log')
-const overlay     = document.getElementById('overlay')
-const overlayTitle= document.getElementById('overlayTitle')
-const overlaySub  = document.getElementById('overlaySub')
-const overlayCountdown = document.getElementById('overlayCountdown')
-
-let currentUser = ''
-let seenTotal   = -1
-let isLive      = false
-let checkInterval = 15
-let loopTimer   = null
-
-function setStatus(live, msg) {
-  isLive = live
-  dot.className      = live ? 'live' : ''
-  statusDot.className= live ? 'live' : ''
-  statusMsg.textContent = msg || (live ? 'ライブ配信中' : '未配信')
-  statsBar.style.display = live ? 'flex' : 'none'
-  if (live) {
-    overlay.style.display = 'none'
-  } else {
-    overlay.style.display = 'flex'
-    overlayTitle.textContent = 'ライブ配信なし'
-    overlaySub.textContent   = msg || '自動で検知します...'
-  }
-}
-
-function addEntry(data) {
-  const isGift = data.type === 'gift'
-  const div = document.createElement('div')
-  div.className = 'entry' + (isGift ? ' gift' : '')
-  const name = document.createElement('span')
-  name.className = 'name'
-  name.textContent = (isGift ? '🪙 ' : '') + (data.user || '?')
-  const msg = document.createElement('span')
-  msg.className = 'msg'
-  msg.textContent = isGift
-    ? (data.gift_name || 'ギフト') + ' (' + (data.coins || 0) + ' コイン)'
-    : (data.comment || '')
-  div.appendChild(name); div.appendChild(msg)
-  log.appendChild(div)
-  log.scrollTop = log.scrollHeight
-  while (log.children.length > 60) log.removeChild(log.firstChild)
-}
-
-async function fetchStatus() {
-  try {
-    const res = await fetch('/status?user=' + encodeURIComponent(currentUser))
-    const d = await res.json()
-    checkInterval = d.check_interval || 15
-    if (d.live) {
-      setStatus(true, 'ライブ配信中 ✓')
-      viewerVal.textContent = d.viewer_count || 0
-      likeVal.textContent   = d.total_likes  || 0
-      coinVal.textContent   = d.total_coins  || 0
-    } else {
-      setStatus(false, '現在ライブ配信はありません')
-    }
-  } catch { setStatus(false, 'サーバーエラー') }
-}
-
-async function fetchComments() {
-  if (!isLive) return
-  try {
-    const res = await fetch('/comments?user=' + encodeURIComponent(currentUser) + '&limit=50')
-    const d = await res.json()
-    if (!d || !d.comments) return
-    const serverTotal = d.total || 0
-    if (seenTotal === -1) { seenTotal = serverTotal; return }
-    const newCount = serverTotal - seenTotal
-    if (newCount <= 0) return
-    const comments = d.comments
-    const startIdx = Math.max(0, comments.length - newCount)
-    for (let i = startIdx; i < comments.length; i++) addEntry(comments[i])
-    seenTotal = serverTotal
-  } catch {}
-}
-
-let countdown = 0
-function updateCountdown() {
-  if (!isLive) {
-    countdown--
-    if (countdown <= 0) countdown = checkInterval
-    overlayCountdown.textContent = '次の確認まで約 ' + countdown + ' 秒'
-  } else {
-    overlayCountdown.textContent = ''
-    countdown = checkInterval
-  }
-}
-
-async function loop() {
-  await fetchStatus()
-  await fetchComments()
-  countdown = checkInterval
-  loopTimer = setInterval(async () => {
-    await fetchStatus()
-    await fetchComments()
-    countdown = checkInterval
-  }, checkInterval * 1000)
-
-  setInterval(updateCountdown, 1000)
-}
-
-function startViewer(username) {
-  currentUser = username.replace(/^@/, '')
-  seenTotal   = -1
-  isLive      = false
-  log.innerHTML = ''
-  headerUser.textContent = '@' + currentUser
-  inputScreen.style.display = 'none'
-  mainScreen.style.display  = 'flex'
-  if (loopTimer) clearInterval(loopTimer)
-  loop()
-}
-
-startBtn.onclick = () => {
-  const val = userInput.value.trim()
-  if (!val) { errMsg.textContent = 'ユーザー名を入力してください'; return }
-  errMsg.textContent = ''
-  startViewer(val)
-}
-
-userInput.addEventListener('keydown', e => {
-  if (e.key === 'Enter') startBtn.click()
-})
-
-changeBtn.onclick = () => {
-  if (loopTimer) clearInterval(loopTimer)
-  mainScreen.style.display  = 'none'
-  inputScreen.style.display = 'flex'
-  userInput.value = ''
-}
+const inputScreen=document.getElementById('inputScreen'),mainScreen=document.getElementById('mainScreen'),userInput=document.getElementById('userInput'),startBtn=document.getElementById('startBtn'),errMsg=document.getElementById('errMsg'),headerUser=document.getElementById('headerUser'),changeBtn=document.getElementById('changeBtn'),dot=document.getElementById('dot'),statsBar=document.getElementById('statsBar'),viewerVal=document.getElementById('viewerVal'),likeVal=document.getElementById('likeVal'),coinVal=document.getElementById('coinVal'),statusDot=document.getElementById('statusDot'),statusMsg=document.getElementById('statusMsg'),log=document.getElementById('log'),overlay=document.getElementById('overlay'),overlayTitle=document.getElementById('overlayTitle'),overlaySub=document.getElementById('overlaySub'),overlayCountdown=document.getElementById('overlayCountdown')
+let currentUser='',seenTotal=-1,isLive=false,checkInterval=15,loopTimer=null,countdown=0
+function setStatus(live,msg){isLive=live;dot.className=live?'live':'';statusDot.className=live?'live':'';statusMsg.textContent=msg||(live?'ライブ配信中':'未配信');statsBar.style.display=live?'flex':'none';if(live){overlay.style.display='none'}else{overlay.style.display='flex';overlayTitle.textContent='ライブ配信なし';overlaySub.textContent=msg||'自動で検知します...'}}
+function addEntry(data){const isGift=data.type==='gift';const div=document.createElement('div');div.className='entry'+(isGift?' gift':'');const name=document.createElement('span');name.className='name';name.textContent=(isGift?'🪙 ':'')+(data.user||'?');const msg=document.createElement('span');msg.className='msg';msg.textContent=isGift?(data.gift_name||'ギフト')+' ('+(data.coins||0)+' コイン)':(data.comment||'');div.appendChild(name);div.appendChild(msg);log.appendChild(div);log.scrollTop=log.scrollHeight;while(log.children.length>60)log.removeChild(log.firstChild)}
+async function fetchStatus(){try{const res=await fetch('/status?user='+encodeURIComponent(currentUser));const d=await res.json();checkInterval=d.check_interval||15;if(d.live){setStatus(true,'ライブ配信中 ✓');viewerVal.textContent=d.viewer_count||0;likeVal.textContent=d.total_likes||0;coinVal.textContent=d.total_coins||0}else{setStatus(false,'現在ライブ配信はありません')}}catch{setStatus(false,'サーバーエラー')}}
+async function fetchComments(){if(!isLive)return;try{const res=await fetch('/comments?user='+encodeURIComponent(currentUser)+'&limit=50');const d=await res.json();if(!d||!d.comments)return;const serverTotal=d.total||0;if(seenTotal===-1){seenTotal=serverTotal;return}const newCount=serverTotal-seenTotal;if(newCount<=0)return;const comments=d.comments;const startIdx=Math.max(0,comments.length-newCount);for(let i=startIdx;i<comments.length;i++)addEntry(comments[i]);seenTotal=serverTotal}catch{}}
+function startViewer(username){currentUser=username.replace(/^@/,'');seenTotal=-1;isLive=false;log.innerHTML='';headerUser.textContent='@'+currentUser;inputScreen.style.display='none';mainScreen.style.display='flex';if(loopTimer)clearInterval(loopTimer);fetchStatus();fetchComments();loopTimer=setInterval(()=>{fetchStatus();fetchComments();},checkInterval*1000);countdown=checkInterval;setInterval(()=>{if(!isLive){countdown--;if(countdown<=0)countdown=checkInterval;overlayCountdown.textContent='次の確認まで約'+countdown+'秒'}else{overlayCountdown.textContent='';countdown=checkInterval}},1000)}
+startBtn.onclick=()=>{const val=userInput.value.trim();if(!val){errMsg.textContent='ユーザー名を入力してください';return}errMsg.textContent='';startViewer(val)}
+userInput.addEventListener('keydown',e=>{if(e.key==='Enter')startBtn.click()})
+changeBtn.onclick=()=>{if(loopTimer)clearInterval(loopTimer);mainScreen.style.display='none';inputScreen.style.display='flex';userInput.value=''}
 </script>
 </body>
 </html>
@@ -486,6 +351,7 @@ async def get_status(user: str = Query(...)):
         "viewer_count":   session.viewer_count,
         "total_coins":    session.total_coins,
         "total_likes":    session.total_likes,
+        "like_top3":      session._get_top3(),
     }
 
 
@@ -496,19 +362,23 @@ async def get_comments(user: str = Query(...), limit: int = 50):
     return {"comments": items, "total": len(session.comments)}
 
 
+@app.get("/likes/ranking")
+async def get_like_ranking(user: str = Query(...)):
+    session = await get_or_create_session(user)
+    return {"ranking": session._get_top3()}
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket, user: str = Query(...)):
     await ws.accept()
     session = await get_or_create_session(user)
     session.ws_clients.add(ws)
-
     await ws.send_text(json.dumps({
         "type":     "init",
         "live":     session.is_live,
         "comments": list(session.comments),
         "message":  "ライブ配信中" if session.is_live else "現在ライブ配信はありません。自動確認中...",
     }, ensure_ascii=False))
-
     try:
         while True:
             await ws.receive_text()

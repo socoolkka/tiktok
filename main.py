@@ -13,7 +13,7 @@ import asyncio
 import json
 import logging
 import time
-from collections import deque, defaultdict
+from collections import deque
 from contextlib import asynccontextmanager
 from typing import Dict, Set
 
@@ -31,7 +31,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 
-# ── セッション ────────────────────────────────────────────────
 class LiveSession:
     def __init__(self, username: str):
         self.username      = username
@@ -41,7 +40,8 @@ class LiveSession:
         self.total_coins   = 0
         self.total_likes   = 0
         self.comments      = deque(maxlen=MAX_HISTORY)
-        self.like_ranking: dict = {}   # user_id → {user, likes}
+        self.like_ranking: dict = {}
+        self.gift_ranking: dict = {}
         self.ws_clients: Set[WebSocket] = set()
         self.task          = None
         self.running       = True
@@ -109,10 +109,24 @@ class LiveSession:
                 repeat  = getattr(event, "repeat_count", 1) or 1
                 coins   = diamond * repeat
                 self.total_coins += coins
+
+                # ギフトランキング更新
+                uid  = str(event.from_user.unique_id or "")
+                name = event.from_user.nickname or "?"
+                gift_name = getattr(event.m_gift, "name", "ギフト")
+                if uid not in self.gift_ranking:
+                    self.gift_ranking[uid] = {"user": name, "coins": 0}
+                self.gift_ranking[uid]["coins"] += coins
+                self.gift_ranking[uid]["user"]   = name
+
+                top3 = self._get_gift_top3()
                 await self.broadcast({
-                    "type": "gift", "user": event.from_user.nickname or "?",
-                    "gift_name": getattr(event.m_gift, "name", "ギフト"),
-                    "coins": coins, "total_coins": self.total_coins,
+                    "type":           "gift",
+                    "user":           name,
+                    "gift_name":      gift_name,
+                    "coins":          coins,
+                    "total_coins":    self.total_coins,
+                    "gift_top3":      top3,
                 })
             except Exception as e:
                 logger.warning(f"[{self.username}] on_gift: {e}")
@@ -121,18 +135,15 @@ class LiveSession:
         async def on_like(event):
             try:
                 self.total_likes = event.total or self.total_likes
-
-                # いいねランキング更新
                 uid  = str(event.user.unique_id or "")
                 name = event.user.nickname or "?"
                 count = getattr(event, "count", 1) or 1
                 if uid not in self.like_ranking:
                     self.like_ranking[uid] = {"user": name, "likes": 0}
                 self.like_ranking[uid]["likes"] += count
-                self.like_ranking[uid]["user"]   = name  # 名前を最新に更新
+                self.like_ranking[uid]["user"]   = name
 
-                # トップ3をブロードキャスト
-                top3 = self._get_top3()
+                top3 = self._get_like_top3()
                 await self.broadcast({
                     "type":        "like",
                     "total_likes": self.total_likes,
@@ -160,14 +171,13 @@ class LiveSession:
             self.total_coins  = 0
             self.total_likes  = 0
             self.like_ranking = {}
+            self.gift_ranking = {}
 
-    def _get_top3(self):
-        sorted_likes = sorted(
-            self.like_ranking.values(),
-            key=lambda x: x["likes"],
-            reverse=True
-        )
-        return sorted_likes[:3]
+    def _get_like_top3(self):
+        return sorted(self.like_ranking.values(), key=lambda x: x["likes"], reverse=True)[:3]
+
+    def _get_gift_top3(self):
+        return sorted(self.gift_ranking.values(), key=lambda x: x["coins"], reverse=True)[:3]
 
     async def watcher(self):
         logger.info(f"[{self.username}] 監視開始")
@@ -199,7 +209,6 @@ class LiveSession:
             except asyncio.CancelledError: pass
 
 
-# ── セッション管理 ────────────────────────────────────────────
 sessions: Dict[str, LiveSession] = {}
 session_last_access: Dict[str, float] = {}
 SESSION_TIMEOUT = 3600
@@ -351,7 +360,8 @@ async def get_status(user: str = Query(...)):
         "viewer_count":   session.viewer_count,
         "total_coins":    session.total_coins,
         "total_likes":    session.total_likes,
-        "like_top3":      session._get_top3(),
+        "like_top3":      session._get_like_top3(),
+        "gift_top3":      session._get_gift_top3(),
     }
 
 
@@ -365,7 +375,13 @@ async def get_comments(user: str = Query(...), limit: int = 50):
 @app.get("/likes/ranking")
 async def get_like_ranking(user: str = Query(...)):
     session = await get_or_create_session(user)
-    return {"ranking": session._get_top3()}
+    return {"ranking": session._get_like_top3()}
+
+
+@app.get("/gifts/ranking")
+async def get_gift_ranking(user: str = Query(...)):
+    session = await get_or_create_session(user)
+    return {"ranking": session._get_gift_top3()}
 
 
 @app.websocket("/ws")
